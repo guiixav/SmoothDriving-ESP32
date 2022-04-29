@@ -8,7 +8,7 @@ Codigo implementado no chipset de coleta de dados do veiculo
     https://dl.espressif.com/dl/package_esp32_index.json
 
 - Dentre as placas do pacote ESP32, selecionar a DOIT_ESP32_DEVKIT_V1 
-- No arquivo "Boards,txt" adicionar as configurações abaixo dentro da sessão da placa DOIT_ESP32_DEVKIT_V1
+- No arquivo "Boards.txt" adicionar as configurações abaixo dentro da sessão da placa DOIT_ESP32_DEVKIT_V1
     
         # additional settings by GuiiXav
 

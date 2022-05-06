@@ -10,6 +10,16 @@
 //imports para funcionamento sensor MPU
 #include <Wire.h>
 #include <HardwareSerial.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include "I2Cdev.h"
+#include "MPU6050.h"
+#if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
+    #include "Wire.h"
+#endif
+
+Adafruit_MPU6050 mpu;
+MPU6050 accelgyro;
 
 //imports para o funcionamento do sensor LM327 via bluetooth serial
 #include "BluetoothSerial.h"
@@ -17,7 +27,8 @@
 
 
 TaskHandle_t sensorMPU;
-TaskHandle_t sensorObd;
+TaskHandle_t sensorObdRPM;
+TaskHandle_t sensorObdVel;
 SemaphoreHandle_t Semaphore;
 
 //identificador de viagem
@@ -25,8 +36,7 @@ uint32_t randomNumber;
 
 //Acelerometro config
 const int MPU_addr=0x68; //Endereço do sensor
-int16_t AcX,AcY,AcZ,Tmp,GyX,GyY,GyZ; //Variaveis para pegar os valores medidos
-
+float AcX,AcY,AcZ,Tmp,GyX,GyY,GyZ; //Variaveis para pegar os valores medidos
 
 //ELM327 config com bluetooth serial
 BluetoothSerial SerialBT;
@@ -60,22 +70,14 @@ void setup() {
 
   DEBUG_PORT.begin(115200);
   DEBUG_PORT.println("Iniciando");
+  setupAdaFruit();
   randomNumber = esp_random();
   
   Semaphore = xSemaphoreCreateMutex();
 
   
   setupWiFi();
-  // BEGIN MPU SETUP
-  if (getMPUvalues == true) {
-    Wire.begin(); //Inicia a comunicação I2C
-    Wire.beginTransmission(MPU_addr); //Começa a transmissao de dados para o sensor
-    Wire.write(0x6B); // registrador PWR_MGMT_1
-    Wire.write(0); // Manda 0 e "acorda" o MPU 6050
-    Wire.endTransmission(true);
-  }
-  // END MPU SETUP
-
+  
   // BEGIN OBDII SETUP
   if (getODBvalues) {
     ELM_PORT.begin("ArduHUD", true);
@@ -105,13 +107,21 @@ void setup() {
                           APP_CPU_NUM);
 
 
-  xTaskCreatePinnedToCore(getObd,
-                          "sensorOBD",
+  xTaskCreatePinnedToCore(getObdRPM,
+                          "sensorObdRPM",
                           10000,
                           NULL,
                           1,
-                          &sensorObd,
+                          &sensorObdRPM,
                           PRO_CPU_NUM);
+
+ // xTaskCreatePinnedToCore(getObdVel,
+ //                         "sensorObdVel",
+ //                         10000,
+ //                        NULL,
+ //                         2,
+ //                         &sensorObdVel,
+ //                         PRO_CPU_NUM);
 
 }
 
@@ -129,6 +139,29 @@ void setupWiFi()
     Serial.print("Wifi.LocalIP()");
 }
 
+void setupAdaFruit()
+{ 
+  #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
+        Wire.begin();
+    #elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
+        Fastwire::setup(400, true);
+    #endif
+     accelgyro.initialize();
+     mpu.begin();
+  if (mpu.begin()) {
+    Serial.println("Failed to find MPU6050 chip");
+    while (1) {
+      delay(10);
+    }
+  }
+  delay(1000);
+  Serial.print("inicializou mpu");
+  mpu.setAccelerometerRange(MPU6050_RANGE_16_G);
+  mpu.setGyroRange(MPU6050_RANGE_250_DEG);
+  mpu.setFilterBandwidth(MPU6050_BAND_5_HZ);
+  
+  }
+
 void loop()
 {  
       vTaskDelete(NULL);
@@ -137,14 +170,19 @@ void loop()
 
 void httpRequest(String path, String data)
 {
+  
+  Serial.println("Iniciou httpRequest");
     String result = makeRequest(path, data);
     Serial.println("##[RESULT]## ==> " + result);
+  Serial.println("Terminou httpRequest");
 }
 
 
-String makeRequest(String path, String bodyRequest)
+String makeRequest(String path, String bodyRequest) 
 {
+  Serial.println("Iniciou makeRequest");
     String fullAddress = "http://" + String(orionAddressPath) + path;
+    
     http.begin(fullAddress);
     //Serial.println("Orion URI request: " + fullAddress);
     http.addHeader("Content-Type", "application/json");
@@ -152,82 +190,109 @@ String makeRequest(String path, String bodyRequest)
     http.addHeader("fiware-service", "helixiot");
     http.addHeader("fiware-servicepath", "/");
     Serial.println(bodyRequest);
-    int httpCode = http.POST(bodyRequest);
+    http.POST(bodyRequest);
     Serial.println("HTTP CODE");
-    Serial.println(httpCode);
-    return "OK";
+    Serial.println("Requisição enviada");
+    
    
     http.end();
+    
+    Serial.println("Terminou makeRequest");
+  return "OK";
 }
 
 // Update Values in the Helix Sandbox
 void orionUpdate(String entityID, String dados)
 {
+  
+  Serial.println("Iniciou OrionUpdate");
     String pathRequest = "/entities/" + entityID + "/attrs?options=forcedUpdate";
     httpRequest(pathRequest, dados);
+  Serial.println("Terminou OrionUpdate");
 }
 
 
-void getObd(void *arg)
+void getObdRPM(void *arg)
 {
   for(;;){
   if (isOBDon) {
 
    float RPM = myELM327.rpm();
-   //float veloc = myELM327.kph(); 
    if (myELM327.nb_rx_state == ELM_SUCCESS)
     {
       Serial.println("OBD CONECTADO");
       tempRPM = (uint32_t)RPM;
-      //vel = (uint32_t)veloc;
       
      // Serial.print("VELOCIDADE: "); Serial.println(vel);
       Serial.print("RPM: "); Serial.println(tempRPM);
       delay(1);
     }
     delay(1);
-  }
+  }delay(1);
+}delay(1);
 }
-}
+  
 
+
+void getObdVel(void *arg)
+{
+  for(;;){
+  if (isOBDon) {
+
+   float velo = myELM327.mph();
+   if (myELM327.nb_rx_state == ELM_SUCCESS)
+    {
+      Serial.println("OBD CONECTADO");
+      //tempVel= (uint32_t)vel;
+      vel = (uint32_t)velo;
+      vel = vel * 1.6;
+      Serial.print("VELOCIDADE: "); Serial.println(vel);
+      delay(100);
+    }
+    delay(100);
+  }
+  delay(1);
+} delay(1);
+}
 
 void getMpu( void * arg)
 {
    
   for(;;){ 
-   //MPU6050  
-  if (getMPUvalues) {
-    DEBUG_PORT.println("MPU CONECTADO");
-    Wire.beginTransmission(MPU_addr); //Começa a transmissao de dados para o sensor
-    Wire.write(0x3B); // registrador dos dados medidos (ACCEL_XOUT_H)
-    Wire.endTransmission(false);
-    Wire.requestFrom(MPU_addr,14); // faz um "pedido" para ler 14 registradores, que serão os registrados com os dados medidos
-    DEBUG_PORT.println("Coletando dados MPU");
-    AcX=Wire.read()<<8|Wire.read(); // 0x3B (ACCEL_XOUT_H) & 0x3C (ACCEL_XOUT_L)
-    AcY=Wire.read()<<8|Wire.read(); // 0x3D (ACCEL_YOUT_H) & 0x3E (ACCEL_YOUT_L)
-    AcZ=Wire.read()<<8|Wire.read(); // 0x3F (ACCEL_ZOUT_H) & 0x40 (ACCEL_ZOUT_L)
-    Tmp=Wire.read()<<8|Wire.read(); // 0x41 (TEMP_OUT_H) & 0x42 (TEMP_OUT_L)
-    GyX=Wire.read()<<8|Wire.read(); // 0x43 (GYRO_XOUT_H) & 0x44 (GYRO_XOUT_L)
-    GyY=Wire.read()<<8|Wire.read(); // 0x45 (GYRO_YOUT_H) & 0x46 (GYRO_YOUT_L)
-    GyZ=Wire.read()<<8|Wire.read(); // 0x47 (GYRO_ZOUT_H) & 0x48 (GYRO_ZOUT_L)
+    sensors_event_t a, g, temp;
+    mpu.getEvent(&a, &g, &temp);
+    Serial.print("Acceleration X: ");
+    AcX = a.acceleration.x;
+    Serial.print(AcX);
+    Serial.print(", Y: ");
+    AcY = a.acceleration.y;
+    Serial.print(AcY);
+    Serial.print(", Z: ");
+    AcZ = a.acceleration.z;
+    Serial.print(AcZ);
+    Serial.println(" m/s^2");
 
-    DEBUG_PORT.print("AcX: "); DEBUG_PORT.println(AcX);
-    DEBUG_PORT.print("AcY: "); DEBUG_PORT.println(AcY);
-    DEBUG_PORT.print("AcZ: "); DEBUG_PORT.println(AcZ);
-    DEBUG_PORT.print("Tmp: "); DEBUG_PORT.println(Tmp);
-    DEBUG_PORT.print("GyX: "); DEBUG_PORT.println(GyX);
-    DEBUG_PORT.print("GyY: "); DEBUG_PORT.println(GyY);
-    DEBUG_PORT.print("GyZ: "); DEBUG_PORT.println(GyZ);
-    DEBUG_PORT.println("DADOS DE ACELEROMETRO COLETADOS!");
-    }
-    sendBroker();
+    Serial.print("Rotation X: ");
+    GyX = g.gyro.x;
+    Serial.print(GyX);
+    Serial.print(", Y: ");
+    GyY = g.gyro.y;
+    Serial.print(GyY);
+    Serial.print(", Z: ");
+    GyZ = g.gyro.z;
+    Serial.print(GyZ);
+    Serial.println(" rad/s");
+    sendToBroker();
+  }
+    
     delay(1);
   }
   
-}
 
-void sendBroker()
-{
+
+void sendToBroker()
+{ 
+  Serial.println("Iniciou SendToBroker");
   data = "{\"EixoXAcelerometro\": { \"value\": \"" +String(AcX)+ "\", \"type\": \"float\"}," +
          "\"EixoYAcelerometro\": { \"value\": \"" +String(AcY)+ "\", \"type\": \"float\"}," + 
          "\"EixoZAcelerometro\": { \"value\": \"" +String(AcZ)+ "\", \"type\": \"float\"}," +
@@ -238,6 +303,9 @@ void sendBroker()
          "\"RPMveiculo\": { \"value\": \"" +String(tempRPM)+ "\", \"type\": \"float\"},"
          "\"IdViagem\": { \"value\": \"" + randomNumber + "\", \"type\": \"float\"}}";
    orionUpdate( deviceID,  data);
+   Serial.println(data);
+   
+  Serial.println("Terminou SendToBroker");
  }
 
  

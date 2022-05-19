@@ -9,32 +9,46 @@
 
 //imports para funcionamento sensor MPU
 #include <Wire.h>
-#include <HardwareSerial.h>
 #include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
-#include "I2Cdev.h"
 #include "MPU6050.h"
-#if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
-    #include "Wire.h"
-#endif
 
-Adafruit_MPU6050 mpu;
-MPU6050 accelgyro;
+//imports para funcionamento do GPS
+#include <SoftwareSerial.h>
+#include <TinyGPS.h>
 
 //imports para o funcionamento do sensor LM327 via bluetooth serial
 #include "BluetoothSerial.h"
 #include "ELMduino.h"
 
+Adafruit_MPU6050 mpu;
+MPU6050 accelgyro;
 
+
+TinyGPS gps;
+SoftwareSerial ss;
+
+
+
+//parametros para o instanciamento do multi task
 TaskHandle_t sensorMPU;
 TaskHandle_t sensorObdRPM;
-TaskHandle_t sensorObdVel;
+TaskHandle_t sensorGps;
 SemaphoreHandle_t Semaphore;
 
 //identificador de viagem
 uint32_t randomNumber;
 
-//Acelerometro config
+
+//variaveis para armazenar os dados do GPS
+String gpsDataLat = "";
+String gpsDataLong = "";
+String gpsDataVel = "";
+char buff[10];
+float flat, flon;
+unsigned long age;
+
+
+//variaveis para armazenar os dados do Acelerometro
 const int MPU_addr=0x68; //Endereço do sensor
 float AcX,AcY,AcZ,Tmp,GyX,GyY,GyZ; //Variaveis para pegar os valores medidos
 
@@ -47,7 +61,8 @@ float tempRPM ;
 int32_t vel ;
 
 // WiFi Network Configuration
-const char *ssid = "iPhone de Guilherme"; //const char *ssid = "BorbaXavier"; //const char *ssid = "Ian - Ultra";
+const char *ssid = "iPhone de Guilherme"; 
+//const char *ssid = "BorbaXavier"; //const char *ssid = "Ian - Ultra";
 const char *password = "12022022";//const char *password = "Ian12345";
 const char *hostname = "ESP32";
 HTTPClient http;
@@ -56,14 +71,14 @@ HTTPClient http;
 const char *orionAddressPath = "15.228.222.191:1026/v2";
 
 // Device ID (example: urn:ngsi-ld:entity:001)
-const char *deviceID = "urn:ngsi-ld:entity:022";
+const char *deviceID = "urn:ngsi-ld:entity:025";
 
 
 //Variavel que armazena o payload
 String data;
 //variaveis liga e desliga das sessões do fluxo
-bool isOBDon = true;
-bool getODBvalues = true;
+bool isOBDon = false;
+bool getODBvalues = false;
 bool getMPUvalues = true;
 
 void setup() {
@@ -71,6 +86,7 @@ void setup() {
   DEBUG_PORT.begin(115200);
   DEBUG_PORT.println("Iniciando");
   setupAdaFruit();
+  setupGPS();
   randomNumber = esp_random();
   
   Semaphore = xSemaphoreCreateMutex();
@@ -115,14 +131,6 @@ void setup() {
                           &sensorObdRPM,
                           PRO_CPU_NUM);
 
- // xTaskCreatePinnedToCore(getObdVel,
- //                         "sensorObdVel",
- //                         10000,
- //                        NULL,
- //                         2,
- //                         &sensorObdVel,
- //                         PRO_CPU_NUM);
-
 }
 
 void setupWiFi()
@@ -160,7 +168,19 @@ void setupAdaFruit()
   mpu.setGyroRange(MPU6050_RANGE_250_DEG);
   mpu.setFilterBandwidth(MPU6050_BAND_5_HZ);
   
+}
+
+void setupGPS()
+{
+  // Initialize gps
+  ss.begin(9600, SWSERIAL_8N1, 19, 18, false);
+  if(!ss){
+    Serial.println("Invalid SoftwareSerial pin configuration, check config"); 
+    while (1) { // Don't continue with invalid configuration
+      delay (1000);
+    }
   }
+}
 
 void loop()
 {  
@@ -170,7 +190,7 @@ void loop()
 
 void httpRequest(String path, String data)
 {
-  
+    
   Serial.println("Iniciou httpRequest");
     String result = makeRequest(path, data);
     Serial.println("##[RESULT]## ==> " + result);
@@ -193,9 +213,6 @@ String makeRequest(String path, String bodyRequest)
     http.POST(bodyRequest);
     Serial.println("HTTP CODE");
     Serial.println("Requisição enviada");
-    
-   
-    http.end();
     
     Serial.println("Terminou makeRequest");
   return "OK";
@@ -221,8 +238,10 @@ void getObdRPM(void *arg)
    if (myELM327.nb_rx_state == ELM_SUCCESS)
     {
       Serial.println("OBD CONECTADO");
-      tempRPM = (uint32_t)RPM;
-      
+      if(RPM != 0)
+      {
+        tempRPM = (uint32_t)RPM;
+      }
      // Serial.print("VELOCIDADE: "); Serial.println(vel);
       Serial.print("RPM: "); Serial.println(tempRPM);
       delay(1);
@@ -232,29 +251,6 @@ void getObdRPM(void *arg)
 }delay(1);
 }
   
-
-
-void getObdVel(void *arg)
-{
-  for(;;){
-  if (isOBDon) {
-
-   float velo = myELM327.mph();
-   if (myELM327.nb_rx_state == ELM_SUCCESS)
-    {
-      Serial.println("OBD CONECTADO");
-      //tempVel= (uint32_t)vel;
-      vel = (uint32_t)velo;
-      vel = vel * 1.6;
-      Serial.print("VELOCIDADE: "); Serial.println(vel);
-      delay(100);
-    }
-    delay(100);
-  }
-  delay(1);
-} delay(1);
-}
-
 void getMpu( void * arg)
 {
    
@@ -282,6 +278,7 @@ void getMpu( void * arg)
     GyZ = g.gyro.z;
     Serial.print(GyZ);
     Serial.println(" rad/s");
+    getGPS();
     sendToBroker();
   }
     
@@ -299,7 +296,9 @@ void sendToBroker()
          "\"EixoXGiroscopio\": { \"value\": \"" +String(GyX)+ "\", \"type\": \"float\"}," +
          "\"EixoYGiroscopio\": { \"value\": \"" +String(GyY)+ "\", \"type\": \"float\"}," +
          "\"EixoZGiroscopio\": { \"value\": \"" +String(GyZ)+ "\", \"type\": \"float\"}," +
-         "\"VelocidadeVeiculo\": { \"value\": \"" + String(vel) + "\", \"type\": \"float\"}," +
+         "\"Latitude\": { \"value\": \"" +gpsDataLat+ "\", \"type\": \"float\"}," +
+         "\"Longitude\": { \"value\": \"" + gpsDataLong + "\", \"type\": \"float\"}," +
+         "\"Velocidade\": { \"value\": \"" + gpsDataVel + "\", \"type\": \"float\"}," +
          "\"RPMveiculo\": { \"value\": \"" +String(tempRPM)+ "\", \"type\": \"float\"},"
          "\"IdViagem\": { \"value\": \"" + randomNumber + "\", \"type\": \"float\"}}";
    orionUpdate( deviceID,  data);
@@ -308,4 +307,44 @@ void sendToBroker()
   Serial.println("Terminou SendToBroker");
  }
 
+ void getGPS()
+ {
+        // Send GPS data every second
+        gps.f_get_position(&flat, &flon, &age);
+        gpsDataLat = floatToString(flat,TinyGPS::GPS_INVALID_F_ANGLE, 10, 6);
+        gpsDataLong = floatToString(flon,TinyGPS::GPS_INVALID_F_ANGLE, 11, 6);
+        gpsDataVel = gps.f_speed_kmph();
+        if(gpsDataLat.indexOf("v") > 0){
+      //gpsData = "lat=7.207573&lng=125.395874";
+      Serial.println(gpsDataLat + " " + gpsDataLong + " " + gpsDataVel);
+  };
+  Serial.println(gpsDataLat + " " + gpsDataLong + " " + gpsDataVel);
+  smartdelay(1);
+ }
+
  
+//Function for converting gps float values to string
+String floatToString(float val, float invalid, int len, int prec) {
+  String out = "";
+  if (val == invalid) {
+    while (len-- > 1){
+      return "inv" ;
+    }
+  }
+  else{
+    for (int i = 0; i < 10; i++) {
+       dtostrf(val, len, prec, buff);  
+       out += buff;
+       return out;
+    }
+  }
+}
+static void smartdelay(unsigned long ms)
+{
+  unsigned long start = millis();
+  do 
+  {
+    while (ss.available())
+      gps.encode(ss.read());
+  } while (millis() - start < ms);
+}

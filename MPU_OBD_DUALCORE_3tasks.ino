@@ -33,7 +33,6 @@ SoftwareSerial ss;
 TaskHandle_t sensorMPU;
 TaskHandle_t sensorObdRPM;
 TaskHandle_t sensorGps;
-SemaphoreHandle_t Semaphore;
 
 //identificador de viagem
 uint32_t randomNumber;
@@ -87,32 +86,9 @@ void setup() {
   DEBUG_PORT.println("Iniciando");
   setupAdaFruit();
   setupGPS();
-  randomNumber = esp_random();
-  
-  Semaphore = xSemaphoreCreateMutex();
-
-  
   setupWiFi();
-  
-  // BEGIN OBDII SETUP
-  if (getODBvalues) {
-    ELM_PORT.begin("ArduHUD", true);
-    if (!ELM_PORT.connect("OBDII"))
-    {
-        DEBUG_PORT.println("Couldn't connect to OBD scanner - Phase 1");
-        while(1);
-    }
-
-    if (!myELM327.begin(ELM_PORT, true, 2000))
-    {
-        Serial.println("Couldn't connect to OBD scanner - Phase 2");
-        while (1);
-    }
-
-    Serial.println("Connected to ELM327");
-    isOBDon = true;
-  }
-  // END OBDII SETUP
+  setupOBD();
+  randomNumber = esp_random();
 
   xTaskCreatePinnedToCore(getMpu,
                           "sensorMPU",
@@ -130,6 +106,14 @@ void setup() {
                           1,
                           &sensorObdRPM,
                           PRO_CPU_NUM);
+
+  xTaskCreatePinnedToCore(getGPS,
+                         "sensorGps",
+                          10000,
+                          NULL,
+                          2,
+                          &sensorGps,
+                          APP_CPU_NUM);
 
 }
 
@@ -172,13 +156,33 @@ void setupAdaFruit()
 
 void setupGPS()
 {
-  // Initialize gps
   ss.begin(9600, SWSERIAL_8N1, 19, 18, false);
   if(!ss){
     Serial.println("Invalid SoftwareSerial pin configuration, check config"); 
-    while (1) { // Don't continue with invalid configuration
+    while (1) { 
       delay (1000);
     }
+  }
+}
+
+void setupOBD(){
+
+  if (getODBvalues) {
+    ELM_PORT.begin("ArduHUD", true);
+    if (!ELM_PORT.connect("OBDII"))
+    {
+        DEBUG_PORT.println("Couldn't connect to OBD scanner - Phase 1");
+        while(1);
+    }
+
+    if (!myELM327.begin(ELM_PORT, true, 2000))
+    {
+        Serial.println("Couldn't connect to OBD scanner - Phase 2");
+        while (1);
+    }
+
+    Serial.println("Connected to ELM327");
+    isOBDon = true;
   }
 }
 
@@ -218,7 +222,7 @@ String makeRequest(String path, String bodyRequest)
   return "OK";
 }
 
-// Update Values in the Helix Sandbox
+// Atualiza dados no Broker orion
 void orionUpdate(String entityID, String dados)
 {
   
@@ -242,7 +246,6 @@ void getObdRPM(void *arg)
       {
         tempRPM = (uint32_t)RPM;
       }
-     // Serial.print("VELOCIDADE: "); Serial.println(vel);
       Serial.print("RPM: "); Serial.println(tempRPM);
       delay(1);
     }
@@ -278,7 +281,6 @@ void getMpu( void * arg)
     GyZ = g.gyro.z;
     Serial.print(GyZ);
     Serial.println(" rad/s");
-    getGPS();
     sendToBroker();
   }
     
@@ -307,9 +309,9 @@ void sendToBroker()
   Serial.println("Terminou SendToBroker");
  }
 
- void getGPS()
+ void getGPS(void * arg)
  {
-        // Send GPS data every second
+    for(;;){
         gps.f_get_position(&flat, &flon, &age);
         gpsDataLat = floatToString(flat,TinyGPS::GPS_INVALID_F_ANGLE, 10, 6);
         gpsDataLong = floatToString(flon,TinyGPS::GPS_INVALID_F_ANGLE, 11, 6);
@@ -320,10 +322,11 @@ void sendToBroker()
   };
   Serial.println(gpsDataLat + " " + gpsDataLong + " " + gpsDataVel);
   smartdelay(1);
+    }
  }
 
  
-//Function for converting gps float values to string
+//Função para conversão de float para string
 String floatToString(float val, float invalid, int len, int prec) {
   String out = "";
   if (val == invalid) {
@@ -341,6 +344,7 @@ String floatToString(float val, float invalid, int len, int prec) {
 }
 static void smartdelay(unsigned long ms)
 {
+  delay(500);
   unsigned long start = millis();
   do 
   {
